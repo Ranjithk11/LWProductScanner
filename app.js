@@ -381,59 +381,78 @@ function toGrayscale(imageData) {
   return gray;
 }
 
-function decodeZxingFromCanvas(canvas) {
-  const reader = getZxingReader();
-  if (!reader || !canvas?.width) return null;
+function invertGray(gray) {
+  const out = new Uint8ClampedArray(gray.length);
+  for (let index = 0; index < gray.length; index += 1) out[index] = 255 - gray[index];
+  return out;
+}
 
-  try {
-    let source = null;
-    if (ZXing.HTMLCanvasElementLuminanceSource) {
-      source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
-    } else if (ZXing.RGBLuminanceSource) {
-      const image = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
-      source = new ZXing.RGBLuminanceSource(toGrayscale(image), canvas.width, canvas.height);
-    }
-    if (!source) return null;
-    const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));
-    const result = reader.decode(bitmap);
-    if (reader.reset) reader.reset();
-    return result?.getText?.() || result?.text || null;
-  } catch (error) {
-    if (reader.reset) {
-      try { reader.reset(); } catch (resetError) { /* ignore */ }
-    }
-    return null;
+function stretchGray(gray) {
+  let min = 255;
+  let max = 0;
+  for (let index = 0; index < gray.length; index += 1) {
+    const value = gray[index];
+    if (value < min) min = value;
+    if (value > max) max = value;
   }
+  const range = Math.max(1, max - min);
+  const out = new Uint8ClampedArray(gray.length);
+  for (let index = 0; index < gray.length; index += 1) {
+    out[index] = ((gray[index] - min) * 255) / range;
+  }
+  return out;
+}
+
+function decodeZxingFromGray(gray, width, height) {
+  const reader = getZxingReader();
+  if (!reader || !ZXing.RGBLuminanceSource || !gray?.length) return null;
+
+  const variants = [gray, stretchGray(gray), invertGray(gray)];
+  const binarizers = [ZXing.HybridBinarizer, ZXing.GlobalHistogramBinarizer].filter(Boolean);
+
+  for (const pixels of variants) {
+    const source = new ZXing.RGBLuminanceSource(pixels, width, height);
+    for (const Binarizer of binarizers) {
+      try {
+        const result = reader.decode(new ZXing.BinaryBitmap(new Binarizer(source)));
+        if (reader.reset) reader.reset();
+        const text = result?.getText?.() || result?.text;
+        if (text) return text;
+      } catch (error) {
+        if (reader.reset) {
+          try { reader.reset(); } catch (resetError) { /* ignore */ }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function decodeZxingFromCanvas(canvas) {
+  if (!canvas?.width) return null;
+  const image = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+  return decodeZxingFromGray(toGrayscale(image), canvas.width, canvas.height);
+}
+
+function getLiveVideo() {
+  return document.querySelector('#cameraReader video') || $('#camera');
 }
 
 function decodeFromVideo(video) {
   const scan = drawVideoFrame(video);
   if (!scan) return null;
 
-  const zxingFull = decodeZxingFromCanvas(scan.canvas);
-  if (zxingFull) return zxingFull;
+  const full = decodeZxingFromCanvas(scan.canvas);
+  if (full) return full;
 
-  const strip = document.createElement('canvas');
   const stripWidth = scan.canvas.width;
-  const stripHeight = Math.max(40, Math.floor(scan.canvas.height * 0.38));
-  strip.width = stripWidth;
-  strip.height = stripHeight;
-  strip.getContext('2d').drawImage(
-    scan.canvas,
-    0,
-    Math.floor((scan.canvas.height - stripHeight) / 2),
-    stripWidth,
-    stripHeight,
-    0,
-    0,
-    stripWidth,
-    stripHeight
-  );
-  const zxingStrip = decodeZxingFromCanvas(strip);
-  if (zxingStrip) return zxingStrip;
+  const stripHeight = Math.max(48, Math.floor(scan.canvas.height * 0.42));
+  const stripY = Math.floor((scan.canvas.height - stripHeight) / 2);
+  const stripImage = scan.context.getImageData(0, stripY, stripWidth, stripHeight);
+  const strip = decodeZxingFromGray(toGrayscale(stripImage), stripWidth, stripHeight);
+  if (strip) return strip;
 
-  const full = scan.context.getImageData(0, 0, scan.canvas.width, scan.canvas.height);
-  return decodeQrFromImageData(full);
+  return decodeQrFromImageData(scan.context.getImageData(0, 0, scan.canvas.width, scan.canvas.height));
 }
 
 function decodeQrFromFile(file) {
@@ -465,11 +484,12 @@ function decodeQrFromFile(file) {
 }
 
 async function scanLoop() {
-  if (!state.stream || state.handlingScan || state.waitingForUser) return;
-  const video = $('#camera');
+  if (state.handlingScan || state.waitingForUser) return;
+  if (!state.stream && !state.cameraScanner) return;
+  const video = getLiveVideo();
 
   try {
-    if (video.readyState >= 2) {
+    if (video?.readyState >= 2) {
       if (state.detector) {
         const codes = await state.detector.detect(video);
         if (codes[0]?.rawValue) {
@@ -565,12 +585,10 @@ async function startHtml5BarcodeScanner() {
 
   state.cameraScanner = new Html5Qrcode('cameraReader', { verbose: false });
   const config = {
-    fps: 12,
+    fps: 15,
     disableFlip: false,
-    qrbox: (viewfinderWidth, viewfinderHeight) => {
-      const width = Math.max(220, Math.floor(viewfinderWidth * 0.92));
-      const height = Math.max(80, Math.floor(Math.min(viewfinderHeight * 0.32, 160)));
-      return { width, height };
+    experimentalFeatures: {
+      useBarCodeDetectorIfSupported: false
     }
   };
   const formats = html5BarcodeFormats();
@@ -630,8 +648,11 @@ async function startCamera() {
     showFeedback('Hold the barcode inside the frame.');
 
     const startedHtml5 = await startHtml5BarcodeScanner();
+    state.detector = await createBarcodeDetector();
     if (!startedHtml5) {
       await startNativeScanner();
+    } else {
+      scanLoop();
     }
     armScanWait();
   } catch (error) {
@@ -645,8 +666,7 @@ function resumeScanning() {
   hideScanHelp();
   showFeedback('Hold the barcode inside the frame.');
   armScanWait();
-  if (state.cameraScanner) return;
-  if (state.stream) {
+  if (state.cameraScanner || state.stream) {
     scanLoop();
     return;
   }
