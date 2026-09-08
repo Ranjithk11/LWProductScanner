@@ -9,6 +9,9 @@ const state = {
   scanContext: null,
   zxingReader: null,
   scanTick: 0,
+  quaggaHits: 0,
+  quaggaLast: '',
+  quaggaRunning: false,
   imageScanner: null,
   cameraScanner: null,
   handlingScan: false,
@@ -296,7 +299,7 @@ function hideScanHelp() {
 
 function showScanHelp() {
   if (state.handlingScan) return;
-  if (!state.stream && !state.cameraScanner) return;
+  if (!state.stream && !state.cameraScanner && !state.quaggaRunning) return;
   state.waitingForUser = true;
   if (state.scanTimer) cancelAnimationFrame(state.scanTimer);
   state.scanTimer = null;
@@ -485,7 +488,7 @@ function decodeQrFromFile(file) {
 
 async function scanLoop() {
   if (state.handlingScan || state.waitingForUser) return;
-  if (!state.stream && !state.cameraScanner) return;
+  if (!state.stream && !state.cameraScanner && !state.quaggaRunning) return;
   const video = getLiveVideo();
 
   try {
@@ -564,72 +567,104 @@ function html5BarcodeFormats() {
   ].filter((format) => format !== undefined);
 }
 
-async function pickBackCameraId() {
-  if (!window.Html5Qrcode?.getCameras) return null;
-  try {
-    const cameras = await Html5Qrcode.getCameras();
-    if (!cameras?.length) return null;
-    const back = cameras.find((camera) => /back|rear|environment/i.test(camera.label || ''));
-    return (back || cameras[0]).id;
-  } catch (error) {
-    return null;
-  }
+function isReliableBarcode(code, result) {
+  const value = String(code || '').replace(/\s/g, '');
+  if (!/^\d{8,14}$/.test(value)) return false;
+  const errors = (result?.codeResult?.decodedCodes || [])
+    .map((item) => item.error)
+    .filter((error) => typeof error === 'number');
+  if (!errors.length) return true;
+  const average = errors.reduce((sum, error) => sum + error, 0) / errors.length;
+  return average < 0.18;
 }
 
-async function startHtml5BarcodeScanner() {
-  if (!window.Html5Qrcode) return false;
-  const reader = $('#cameraReader');
-  if (!reader) return false;
-  reader.innerHTML = '';
+function handleQuaggaDetected(result) {
+  const code = result?.codeResult?.code;
+  if (!isReliableBarcode(code, result)) return;
+  if (state.quaggaLast === code) state.quaggaHits += 1;
+  else {
+    state.quaggaLast = code;
+    state.quaggaHits = 1;
+  }
+  if (state.quaggaHits >= 2) onDecoded(code, 'camera barcode');
+}
+
+function waitTwoFrames() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+async function startQuaggaScanner() {
+  if (!window.Quagga) return false;
+  const target = $('#cameraReader');
+  if (!target) return false;
+  target.innerHTML = '';
   $('#camera').hidden = true;
 
-  state.cameraScanner = new Html5Qrcode('cameraReader', { verbose: false });
-  const config = {
-    fps: 15,
-    disableFlip: false,
-    experimentalFeatures: {
-      useBarCodeDetectorIfSupported: false
-    }
-  };
-  const formats = html5BarcodeFormats();
-  if (formats) config.formatsToSupport = formats;
-
-  const onScan = (decodedText) => {
-    onDecoded(decodedText, 'camera barcode');
-  };
-
-  const cameraId = await pickBackCameraId();
-  const cameraConfig = cameraId || { facingMode: 'environment' };
-
-  try {
-    await state.cameraScanner.start(cameraConfig, config, onScan, () => {});
-    return true;
-  } catch (error) {
-    try {
-      await state.cameraScanner.start({ facingMode: 'environment' }, config, onScan, () => {});
-      return true;
-    } catch (fallbackError) {
-      try {
-        await state.cameraScanner.clear();
-      } catch (clearError) {
-        // Ignore.
+  return new Promise((resolve) => {
+    Quagga.init({
+      numOfWorkers: 0,
+      frequency: 12,
+      locate: true,
+      inputStream: {
+        name: 'Live',
+        type: 'LiveStream',
+        target,
+        size: 800,
+        area: { top: '28%', right: '4%', left: '4%', bottom: '28%' },
+        constraints: {
+          facingMode: { ideal: 'environment' },
+          width: { min: 640, ideal: 1280 },
+          height: { min: 480, ideal: 720 }
+        }
+      },
+      locator: {
+        patchSize: 'medium',
+        halfSample: true
+      },
+      decoder: {
+        readers: ['ean_reader', 'ean_8_reader', 'upc_reader', 'upc_e_reader', 'code_128_reader']
       }
-      state.cameraScanner = null;
-      return false;
-    }
+    }, (error) => {
+      if (error) {
+        console.error(error);
+        resolve(false);
+        return;
+      }
+      Quagga.offDetected(handleQuaggaDetected);
+      Quagga.onDetected(handleQuaggaDetected);
+      Quagga.start();
+      state.quaggaRunning = true;
+      state.quaggaHits = 0;
+      state.quaggaLast = '';
+      if (Quagga.CameraAccess?.enableTorch) {
+        Quagga.CameraAccess.enableTorch().catch(() => {});
+      }
+      resolve(true);
+    });
+  });
+}
+
+function stopQuaggaScanner() {
+  if (!window.Quagga || !state.quaggaRunning) return;
+  try {
+    Quagga.offDetected(handleQuaggaDetected);
+    Quagga.stop();
+  } catch (error) {
+    // Ignore shutdown errors.
   }
+  state.quaggaRunning = false;
 }
 
 async function startNativeScanner() {
   $('#camera').hidden = false;
-  state.detector = await createBarcodeDetector();
   state.stream = await openCameraStream();
   const video = $('#camera');
   video.srcObject = state.stream;
   video.muted = true;
   video.setAttribute('playsinline', 'true');
   await video.play();
-  scanLoop();
 }
 
 async function startCamera() {
@@ -642,18 +677,20 @@ async function startCamera() {
     state.handlingScan = false;
     state.waitingForUser = false;
     state.scanTick = 0;
+    state.quaggaHits = 0;
+    state.quaggaLast = '';
     hideScanHelp();
     $('#cameraWrap').hidden = false;
     document.querySelector('.scanner-card')?.classList.add('is-scanning');
-    showFeedback('Hold the barcode inside the frame.');
+    showFeedback('Hold the barcode so it fills the frame.');
+    await waitTwoFrames();
 
-    const startedHtml5 = await startHtml5BarcodeScanner();
     state.detector = await createBarcodeDetector();
-    if (!startedHtml5) {
+    const startedQuagga = await startQuaggaScanner();
+    if (!startedQuagga) {
       await startNativeScanner();
-    } else {
-      scanLoop();
     }
+    scanLoop();
     armScanWait();
   } catch (error) {
     console.error(error);
@@ -664,9 +701,9 @@ async function startCamera() {
 
 function resumeScanning() {
   hideScanHelp();
-  showFeedback('Hold the barcode inside the frame.');
+  showFeedback('Hold the barcode so it fills the frame.');
   armScanWait();
-  if (state.cameraScanner || state.stream) {
+  if (state.quaggaRunning || state.stream) {
     scanLoop();
     return;
   }
@@ -684,6 +721,7 @@ function stopCamera() {
   hideScanHelp();
   if (state.scanTimer) cancelAnimationFrame(state.scanTimer);
   state.scanTimer = null;
+  stopQuaggaScanner();
   state.stream?.getTracks().forEach((track) => track.stop());
   state.stream = null;
   state.detector = null;
