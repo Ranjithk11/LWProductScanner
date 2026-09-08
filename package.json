@@ -1,7 +1,7 @@
 {
-  "name": "mapping-products",
+  "name": "lw-product-scanner",
   "private": true,
   "scripts": {
-    "dev": "node server.js"
+    "dev": "node dev-server.js"
   }
 }
