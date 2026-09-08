@@ -1,0 +1,7 @@
+{
+  "name": "mapping-products",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js"
+  }
+}
