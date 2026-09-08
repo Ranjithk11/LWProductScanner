@@ -5,11 +5,17 @@ const state = {
   stream: null,
   detector: null,
   scanTimer: null,
+  scanWaitTimer: null,
   scanContext: null,
+  zxingReader: null,
+  scanTick: 0,
   imageScanner: null,
   cameraScanner: null,
-  handlingScan: false
+  handlingScan: false,
+  waitingForUser: false
 };
+
+const SCAN_TIMEOUT_MS = 8000;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -274,10 +280,40 @@ function onDecoded(text, source) {
   const value = String(text || '').trim();
   if (!value || state.handlingScan) return;
   state.handlingScan = true;
+  clearScanWait();
+  hideScanHelp();
   $('#barcodeInput').value = value;
   showFeedback('Code scanned. Looking up price...', true);
   handleLookup(value, source);
   stopCamera();
+}
+
+function hideScanHelp() {
+  const help = $('#scanHelp');
+  if (help) help.hidden = true;
+  state.waitingForUser = false;
+}
+
+function showScanHelp() {
+  if (state.handlingScan || !state.stream) return;
+  state.waitingForUser = true;
+  if (state.scanTimer) cancelAnimationFrame(state.scanTimer);
+  state.scanTimer = null;
+  const help = $('#scanHelp');
+  if (help) help.hidden = false;
+  showFeedback('We could not read the code. Type the numbers under the barcode or upload a photo.');
+}
+
+function clearScanWait() {
+  if (state.scanWaitTimer) {
+    clearTimeout(state.scanWaitTimer);
+    state.scanWaitTimer = null;
+  }
+}
+
+function armScanWait() {
+  clearScanWait();
+  state.scanWaitTimer = setTimeout(showScanHelp, SCAN_TIMEOUT_MS);
 }
 
 function getScanContext() {
@@ -289,6 +325,18 @@ function getScanContext() {
   return { canvas, context: state.scanContext };
 }
 
+function drawVideoFrame(video) {
+  if (!video?.videoWidth) return null;
+  const scan = getScanContext();
+  if (!scan) return null;
+  const maxSize = 900;
+  const scale = Math.min(1, maxSize / Math.max(video.videoWidth, video.videoHeight));
+  scan.canvas.width = Math.max(1, Math.floor(video.videoWidth * scale));
+  scan.canvas.height = Math.max(1, Math.floor(video.videoHeight * scale));
+  scan.context.drawImage(video, 0, 0, scan.canvas.width, scan.canvas.height);
+  return scan;
+}
+
 function decodeQrFromImageData(imageData) {
   if (!window.jsQR || !imageData) return null;
   const result = window.jsQR(imageData.data, imageData.width, imageData.height, {
@@ -297,47 +345,101 @@ function decodeQrFromImageData(imageData) {
   return result?.data || null;
 }
 
-function decodeQrFromVideo(video) {
-  if (!video?.videoWidth || !window.jsQR) return null;
-  const scan = getScanContext();
+function getZxingReader() {
+  if (state.zxingReader) return state.zxingReader;
+  if (!window.ZXing?.MultiFormatReader) return null;
+
+  const hints = new Map();
+  const formats = [
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.UPC_A,
+    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.CODE_128,
+    ZXing.BarcodeFormat.CODE_39,
+    ZXing.BarcodeFormat.QR_CODE,
+    ZXing.BarcodeFormat.DATA_MATRIX
+  ].filter(Boolean);
+  if (ZXing.DecodeHintType) {
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  }
+
+  const reader = new ZXing.MultiFormatReader();
+  if (reader.setHints) reader.setHints(hints);
+  state.zxingReader = reader;
+  return reader;
+}
+
+function decodeZxingFromCanvas(canvas) {
+  const reader = getZxingReader();
+  if (!reader || !canvas?.width) return null;
+
+  try {
+    let source = null;
+    if (ZXing.HTMLCanvasElementLuminanceSource) {
+      source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+    } else if (ZXing.RGBLuminanceSource) {
+      const image = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+      source = new ZXing.RGBLuminanceSource(image.data, canvas.width, canvas.height);
+    }
+    if (!source) return null;
+    const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));
+    const result = reader.decode(bitmap);
+    if (reader.reset) reader.reset();
+    return result?.getText?.() || result?.text || null;
+  } catch (error) {
+    if (reader.reset) {
+      try { reader.reset(); } catch (resetError) { /* ignore */ }
+    }
+    return null;
+  }
+}
+
+function decodeFromVideo(video) {
+  const scan = drawVideoFrame(video);
   if (!scan) return null;
 
-  const maxSize = 720;
-  const scale = Math.min(1, maxSize / Math.max(video.videoWidth, video.videoHeight));
-  scan.canvas.width = Math.max(1, Math.floor(video.videoWidth * scale));
-  scan.canvas.height = Math.max(1, Math.floor(video.videoHeight * scale));
-  scan.context.drawImage(video, 0, 0, scan.canvas.width, scan.canvas.height);
+  const zxingFull = decodeZxingFromCanvas(scan.canvas);
+  if (zxingFull) return zxingFull;
+
+  const strip = document.createElement('canvas');
+  const stripWidth = scan.canvas.width;
+  const stripHeight = Math.max(40, Math.floor(scan.canvas.height * 0.38));
+  strip.width = stripWidth;
+  strip.height = stripHeight;
+  strip.getContext('2d').drawImage(
+    scan.canvas,
+    0,
+    Math.floor((scan.canvas.height - stripHeight) / 2),
+    stripWidth,
+    stripHeight,
+    0,
+    0,
+    stripWidth,
+    stripHeight
+  );
+  const zxingStrip = decodeZxingFromCanvas(strip);
+  if (zxingStrip) return zxingStrip;
 
   const full = scan.context.getImageData(0, 0, scan.canvas.width, scan.canvas.height);
-  const fullResult = decodeQrFromImageData(full);
-  if (fullResult) return fullResult;
-
-  const cropSize = Math.floor(Math.min(scan.canvas.width, scan.canvas.height) * 0.72);
-  const cropX = Math.floor((scan.canvas.width - cropSize) / 2);
-  const cropY = Math.floor((scan.canvas.height - cropSize) / 2);
-  const crop = scan.context.getImageData(cropX, cropY, cropSize, cropSize);
-  return decodeQrFromImageData(crop);
+  return decodeQrFromImageData(full);
 }
 
 function decodeQrFromFile(file) {
   return new Promise((resolve) => {
-    if (!window.jsQR) {
-      resolve(null);
-      return;
-    }
-
     const image = new Image();
     const url = URL.createObjectURL(file);
     image.onload = () => {
       try {
         const canvas = document.createElement('canvas');
-        const maxSize = 1200;
+        const maxSize = 1400;
         const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
         canvas.width = Math.max(1, Math.floor(image.width * scale));
         canvas.height = Math.max(1, Math.floor(image.height * scale));
         const context = canvas.getContext('2d', { willReadFrequently: true });
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        resolve(decodeQrFromImageData(context.getImageData(0, 0, canvas.width, canvas.height)));
+        resolve(decodeZxingFromCanvas(canvas) || decodeQrFromImageData(context.getImageData(0, 0, canvas.width, canvas.height)));
       } catch (error) {
         resolve(null);
       } finally {
@@ -353,7 +455,7 @@ function decodeQrFromFile(file) {
 }
 
 async function scanLoop() {
-  if (!state.stream || state.handlingScan) return;
+  if (!state.stream || state.handlingScan || state.waitingForUser) return;
   const video = $('#camera');
 
   try {
@@ -366,10 +468,13 @@ async function scanLoop() {
         }
       }
 
-      const qrValue = decodeQrFromVideo(video);
-      if (qrValue) {
-        onDecoded(qrValue, 'camera qr');
-        return;
+      state.scanTick += 1;
+      if (state.scanTick % 2 === 0) {
+        const decoded = decodeFromVideo(video);
+        if (decoded) {
+          onDecoded(decoded, 'camera qr or barcode');
+          return;
+        }
       }
     }
   } catch (error) {
@@ -381,15 +486,14 @@ async function scanLoop() {
 
 async function createBarcodeDetector() {
   if (!('BarcodeDetector' in window)) return null;
-  const preferred = ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'data_matrix'];
+  const preferred = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code', 'data_matrix'];
   try {
     const supported = BarcodeDetector.getSupportedFormats ? await BarcodeDetector.getSupportedFormats() : preferred;
     const formats = preferred.filter((format) => supported.includes(format));
-    if (!formats.includes('qr_code') && supported.includes('qr_code')) formats.unshift('qr_code');
-    return new BarcodeDetector({ formats: formats.length ? formats : ['qr_code'] });
+    return new BarcodeDetector({ formats: formats.length ? formats : supported });
   } catch (error) {
     try {
-      return new BarcodeDetector({ formats: ['qr_code'] });
+      return new BarcodeDetector();
     } catch (fallbackError) {
       return null;
     }
@@ -398,6 +502,7 @@ async function createBarcodeDetector() {
 
 async function openCameraStream() {
   const attempts = [
+    { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
     { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
     { video: { facingMode: 'environment' } },
     { video: true }
@@ -420,16 +525,14 @@ async function startCamera() {
     return;
   }
 
-  if (!window.jsQR && !('BarcodeDetector' in window)) {
-    showFeedback('QR scanning could not load. Check your internet connection and refresh the page.');
-    return;
-  }
-
   try {
     state.handlingScan = false;
+    state.waitingForUser = false;
+    state.scanTick = 0;
+    hideScanHelp();
     $('#cameraWrap').hidden = false;
     document.querySelector('.scanner-card')?.classList.add('is-scanning');
-    showFeedback('Point a QR code at the camera. Hold it still for a moment.');
+    showFeedback('Hold the barcode steady in the frame.');
 
     state.detector = await createBarcodeDetector();
     state.stream = await openCameraStream();
@@ -438,6 +541,7 @@ async function startCamera() {
     video.muted = true;
     video.setAttribute('playsinline', 'true');
     await video.play();
+    armScanWait();
     scanLoop();
   } catch (error) {
     console.error(error);
@@ -446,7 +550,26 @@ async function startCamera() {
   }
 }
 
+function resumeScanning() {
+  if (!state.stream || state.handlingScan) {
+    startCamera();
+    return;
+  }
+  hideScanHelp();
+  showFeedback('Hold the barcode steady in the frame.');
+  armScanWait();
+  scanLoop();
+}
+
+function typeBarcodeInstead() {
+  stopCamera();
+  showFeedback('Type the numbers printed under the barcode, then search.');
+  $('#barcodeInput').focus();
+}
+
 function stopCamera() {
+  clearScanWait();
+  hideScanHelp();
   if (state.scanTimer) cancelAnimationFrame(state.scanTimer);
   state.scanTimer = null;
   state.stream?.getTracks().forEach((track) => track.stop());
@@ -535,6 +658,12 @@ $('#lookupForm').addEventListener('submit', (event) => {
 
 $('#startCamera').addEventListener('click', startCamera);
 $('#stopCamera').addEventListener('click', stopCamera);
+$('#typeBarcode').addEventListener('click', typeBarcodeInstead);
+$('#keepScanning').addEventListener('click', resumeScanning);
+$('#helpUpload').addEventListener('click', () => {
+  stopCamera();
+  $('#imageInput').click();
+});
 $('#imageInput').addEventListener('change', (event) => scanImage(event.target.files[0]));
 $('#clearSearch').addEventListener('click', () => {
   renderTiles(state.products.slice(0, 6));

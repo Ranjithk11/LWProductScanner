@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css?v=qr2" />
+    <link rel="stylesheet" href="styles.css?v=scan3" />
   </head>
   <body>
     <main class="shell">
@@ -24,7 +24,17 @@
           <canvas id="scanCanvas" hidden></canvas>
           <div class="scan-frame" aria-hidden="true"><span></span><span></span><span></span><span></span><i></i></div>
           <button class="close-camera" id="stopCamera" type="button" aria-label="Close camera">×</button>
-          <p class="camera-hint">Hold the QR code steady in the square</p>
+          <p class="camera-hint" id="cameraHint">Align the barcode inside the frame</p>
+          <div class="scan-help" id="scanHelp" hidden>
+            <div class="scan-help-card">
+              <p class="section-kicker">SCAN TIMED OUT</p>
+              <h3>We couldn’t read the code</h3>
+              <p>Type the numbers printed under the barcode, or upload a clearer photo.</p>
+              <button class="primary-action" id="typeBarcode" type="button">Type barcode numbers</button>
+              <button class="upload-action" id="helpUpload" type="button">Upload product photo</button>
+              <button class="text-button" id="keepScanning" type="button">Keep scanning</button>
+            </div>
+          </div>
         </div>
         <div class="actions"><button class="primary-action" id="startCamera" type="button"><span class="button-icon">⌾</span> Scan with camera</button><label class="upload-action" for="imageInput"><span class="button-icon">↥</span> Use product image<input id="imageInput" type="file" accept="image/*" /></label></div>
         <div class="divider"><span>or enter QR / barcode manually</span></div>
@@ -37,8 +47,9 @@
       <footer><span>LeafWater</span><span>Powered by your product catalog</span></footer>
     </main>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
     <script src="https://unpkg.com/html5-qrcode" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" crossorigin="anonymous"></script>
-    <script src="app.js?v=qr2"></script>
+    <script src="app.js?v=scan3"></script>
   </body>
 </html>
