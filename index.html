@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css?v=scan3" />
+    <link rel="stylesheet" href="styles.css?v=scan4" />
   </head>
   <body>
     <main class="shell">
@@ -20,15 +20,16 @@
       <section class="scanner-card" aria-labelledby="scannerTitle">
         <div class="card-heading"><div><p class="section-kicker">01 / SCAN</p><h2 id="scannerTitle">Find a product</h2></div><span class="live-pill">● LIVE</span></div>
         <div class="camera-wrap" id="cameraWrap" hidden>
-          <video id="camera" autoplay muted playsinline></video>
+          <div id="cameraReader"></div>
+          <video id="camera" autoplay muted playsinline hidden></video>
           <canvas id="scanCanvas" hidden></canvas>
           <div class="scan-frame" aria-hidden="true"><span></span><span></span><span></span><span></span><i></i></div>
           <button class="close-camera" id="stopCamera" type="button" aria-label="Close camera">×</button>
-          <p class="camera-hint" id="cameraHint">Align the barcode inside the frame</p>
+          <p class="camera-hint" id="cameraHint">Hold the barcode inside the frame</p>
           <div class="scan-help" id="scanHelp" hidden>
             <div class="scan-help-card">
               <p class="section-kicker">SCAN TIMED OUT</p>
-              <h3>We couldn’t read the code</h3>
+              <h3>We couldn’t read the barcode</h3>
               <p>Type the numbers printed under the barcode, or upload a clearer photo.</p>
               <button class="primary-action" id="typeBarcode" type="button">Type barcode numbers</button>
               <button class="upload-action" id="helpUpload" type="button">Upload product photo</button>
@@ -50,6 +51,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
     <script src="https://unpkg.com/html5-qrcode" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" crossorigin="anonymous"></script>
-    <script src="app.js?v=scan3"></script>
+    <script src="app.js?v=scan4"></script>
   </body>
 </html>

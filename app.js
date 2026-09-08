@@ -15,7 +15,7 @@ const state = {
   waitingForUser: false
 };
 
-const SCAN_TIMEOUT_MS = 8000;
+const SCAN_TIMEOUT_MS = 12000;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -295,13 +295,14 @@ function hideScanHelp() {
 }
 
 function showScanHelp() {
-  if (state.handlingScan || !state.stream) return;
+  if (state.handlingScan) return;
+  if (!state.stream && !state.cameraScanner) return;
   state.waitingForUser = true;
   if (state.scanTimer) cancelAnimationFrame(state.scanTimer);
   state.scanTimer = null;
   const help = $('#scanHelp');
   if (help) help.hidden = false;
-  showFeedback('We could not read the code. Type the numbers under the barcode or upload a photo.');
+  showFeedback('We could not read the barcode. Type the numbers under it or upload a photo.');
 }
 
 function clearScanWait() {
@@ -371,6 +372,15 @@ function getZxingReader() {
   return reader;
 }
 
+function toGrayscale(imageData) {
+  const gray = new Uint8ClampedArray(imageData.width * imageData.height);
+  const data = imageData.data;
+  for (let index = 0, pixel = 0; index < gray.length; index += 1, pixel += 4) {
+    gray[index] = (data[pixel] * 0.299 + data[pixel + 1] * 0.587 + data[pixel + 2] * 0.114) | 0;
+  }
+  return gray;
+}
+
 function decodeZxingFromCanvas(canvas) {
   const reader = getZxingReader();
   if (!reader || !canvas?.width) return null;
@@ -381,7 +391,7 @@ function decodeZxingFromCanvas(canvas) {
       source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
     } else if (ZXing.RGBLuminanceSource) {
       const image = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
-      source = new ZXing.RGBLuminanceSource(image.data, canvas.width, canvas.height);
+      source = new ZXing.RGBLuminanceSource(toGrayscale(image), canvas.width, canvas.height);
     }
     if (!source) return null;
     const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));
@@ -519,9 +529,94 @@ async function openCameraStream() {
   throw lastError;
 }
 
+function html5BarcodeFormats() {
+  const formats = window.Html5QrcodeSupportedFormats;
+  if (!formats) return undefined;
+  return [
+    formats.EAN_13,
+    formats.EAN_8,
+    formats.UPC_A,
+    formats.UPC_E,
+    formats.CODE_128,
+    formats.CODE_39,
+    formats.QR_CODE,
+    formats.DATA_MATRIX
+  ].filter((format) => format !== undefined);
+}
+
+async function pickBackCameraId() {
+  if (!window.Html5Qrcode?.getCameras) return null;
+  try {
+    const cameras = await Html5Qrcode.getCameras();
+    if (!cameras?.length) return null;
+    const back = cameras.find((camera) => /back|rear|environment/i.test(camera.label || ''));
+    return (back || cameras[0]).id;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function startHtml5BarcodeScanner() {
+  if (!window.Html5Qrcode) return false;
+  const reader = $('#cameraReader');
+  if (!reader) return false;
+  reader.innerHTML = '';
+  $('#camera').hidden = true;
+
+  state.cameraScanner = new Html5Qrcode('cameraReader', { verbose: false });
+  const config = {
+    fps: 12,
+    disableFlip: false,
+    qrbox: (viewfinderWidth, viewfinderHeight) => {
+      const width = Math.max(220, Math.floor(viewfinderWidth * 0.92));
+      const height = Math.max(80, Math.floor(Math.min(viewfinderHeight * 0.32, 160)));
+      return { width, height };
+    }
+  };
+  const formats = html5BarcodeFormats();
+  if (formats) config.formatsToSupport = formats;
+
+  const onScan = (decodedText) => {
+    onDecoded(decodedText, 'camera barcode');
+  };
+
+  const cameraId = await pickBackCameraId();
+  const cameraConfig = cameraId || { facingMode: 'environment' };
+
+  try {
+    await state.cameraScanner.start(cameraConfig, config, onScan, () => {});
+    return true;
+  } catch (error) {
+    try {
+      await state.cameraScanner.start({ facingMode: 'environment' }, config, onScan, () => {});
+      return true;
+    } catch (fallbackError) {
+      try {
+        await state.cameraScanner.clear();
+      } catch (clearError) {
+        // Ignore.
+      }
+      state.cameraScanner = null;
+      return false;
+    }
+  }
+}
+
+async function startNativeScanner() {
+  $('#camera').hidden = false;
+  state.detector = await createBarcodeDetector();
+  state.stream = await openCameraStream();
+  const video = $('#camera');
+  video.srcObject = state.stream;
+  video.muted = true;
+  video.setAttribute('playsinline', 'true');
+  await video.play();
+  scanLoop();
+}
+
 async function startCamera() {
   if (!window.isSecureContext || !navigator.mediaDevices) {
-    showFeedback('Camera access needs HTTPS or localhost. Open the app from http://localhost:5173, then allow camera permission.');
+    showFeedback('Camera access needs HTTPS or localhost. Allow camera permission and try again.');
     return;
   }
 
@@ -532,17 +627,13 @@ async function startCamera() {
     hideScanHelp();
     $('#cameraWrap').hidden = false;
     document.querySelector('.scanner-card')?.classList.add('is-scanning');
-    showFeedback('Hold the barcode steady in the frame.');
+    showFeedback('Hold the barcode inside the frame.');
 
-    state.detector = await createBarcodeDetector();
-    state.stream = await openCameraStream();
-    const video = $('#camera');
-    video.srcObject = state.stream;
-    video.muted = true;
-    video.setAttribute('playsinline', 'true');
-    await video.play();
+    const startedHtml5 = await startHtml5BarcodeScanner();
+    if (!startedHtml5) {
+      await startNativeScanner();
+    }
     armScanWait();
-    scanLoop();
   } catch (error) {
     console.error(error);
     stopCamera();
@@ -551,14 +642,15 @@ async function startCamera() {
 }
 
 function resumeScanning() {
-  if (!state.stream || state.handlingScan) {
-    startCamera();
+  hideScanHelp();
+  showFeedback('Hold the barcode inside the frame.');
+  armScanWait();
+  if (state.cameraScanner) return;
+  if (state.stream) {
+    scanLoop();
     return;
   }
-  hideScanHelp();
-  showFeedback('Hold the barcode steady in the frame.');
-  armScanWait();
-  scanLoop();
+  startCamera();
 }
 
 function typeBarcodeInstead() {

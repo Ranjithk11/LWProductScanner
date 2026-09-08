@@ -5,10 +5,13 @@
 .feedback.is-ok { color: var(--green); }
 .scanner-card.is-scanning #startCamera { display: none; }
 .camera-wrap { position: relative; overflow: hidden; margin: 22px 0 8px; background: #071b2d; aspect-ratio: 4 / 3; max-height: min(68vh, 520px); border-radius: 14px; }
-.camera-wrap video { display: block; width: 100%; height: 100%; object-fit: cover; background: #071b2d; }
+.camera-wrap video { display: block; width: 100%; height: auto; background: #071b2d; }
+#cameraReader { position: absolute; inset: 0; overflow: hidden; }
+#cameraReader video { width: 100% !important; height: auto !important; object-fit: contain !important; }
+#qr-shaded-region { display: none !important; }
 #scanCanvas { display: none; }
 .scan-frame, .camera-hint, .close-camera { z-index: 2; pointer-events: none; }
-.scan-frame { position: absolute; top: 50%; left: 50%; width: min(86%, 520px); height: 34%; transform: translate(-50%, -50%); border: 1px solid rgba(255,255,255,.22); }
+.scan-frame { position: absolute; top: 50%; left: 50%; width: min(90%, 560px); height: 30%; transform: translate(-50%, -50%); border: 1px solid rgba(255,255,255,.22); }
 .scan-frame span { position: absolute; width: 26px; height: 26px; border-color: #fff; border-style: solid; }
 .scan-frame span:nth-child(1) { inset: -1px auto auto -1px; border-width: 3px 0 0 3px; }
 .scan-frame span:nth-child(2) { inset: -1px -1px auto auto; border-width: 3px 3px 0 0; }
